@@ -176,6 +176,37 @@ class SingleFeederGridManager:
         self.grid.line.at[2, "length_km"] = self.grid.line.at[2, "length_km"] * 10
         self.grid.line.at[4, "length_km"] = self.grid.line.at[4, "length_km"] * 10
 
+    def step_multiagent(self, actions, timestep=0, random_numbers=None):
+        penalties = np.zeros(len(actions))
+        for agent, action in actions.items():
+            penalty = 0
+            penalty += self.storage_controllers[agent].run(
+                grid_state=self.grid,
+                p_action=action[0],
+                q_action=action[1],
+                timestep=timestep,
+            )
+            penalty += self.ev_controllers[agent].run(
+                grid_state=self.grid,
+                p_action=action[2],
+                timestep=timestep,
+                random_numbers=random_numbers[agent],
+            )
+            penalty += self.heat_pump_controllers[agent].run(
+                grid_state=self.grid,
+                p_action=action[3],
+                timestep=timestep,
+            )
+            penalty += self.pv_controllers[agent].run(
+                grid_state=self.grid,
+                q_action=action[4],
+                timestep=timestep,
+            )
+            penalties[agent] = penalty
+
+        aborted = self.run_powerflow(timestep)
+        return aborted, penalties
+
     def step(self, actions=None, timestep=0, random_numbers=None):
         """
         Run a simulation step for the grid, applying the given actions and updating the grid state.

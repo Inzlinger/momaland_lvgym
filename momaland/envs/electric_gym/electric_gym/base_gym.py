@@ -1,9 +1,14 @@
+import functools
+import random
 import numpy as np
 import pandas as pd
 
+from typing_extensions import override
+
 from gymnasium import spaces
+from gymnasium.spaces import Box, Dict
 from gymnasium.utils import EzPickle
-from momaland.utils.env import MOAECEnv
+from momaland.utils.env import MOParallelEnv
 
 from electric_gym.grid_model.single_feeder_grid_manager import SingleFeederGridManager
 
@@ -16,7 +21,7 @@ def raw_env(**kwargs):
     return BaseElectricGym(**kwargs)
 
 
-class BaseElectricGym(MOAECEnv, EzPickle):
+class BaseElectricGym(MOParallelEnv, EzPickle):
 
     def __init__(
         self,
@@ -94,12 +99,9 @@ class BaseElectricGym(MOAECEnv, EzPickle):
         self.control_q = True
         self.control_q_shielding = False
 
-        self.reward_space = spaces.Box(low=-1, high=1, shape=(3,))
         self.reward_dim = 3
 
         self.gridMgr = self.create_grid()
-
-        pv_obs_dim, load_obs_dim, storage_obs_dim, ev_obs_dim, hp_obs_dim = self.gridMgr.get_observation_space()
 
         self.possible_agents = [i for i in range(self.gridMgr.get_controllers_count() + 1)]
 
@@ -107,10 +109,10 @@ class BaseElectricGym(MOAECEnv, EzPickle):
         Actions are:
 
         action[0]: BES P control
-        action[1]: EV P control
-        action[2]: HP P control
-        action[3]: PV Q control
-        action[4]: BES Q control
+        action[1]: BES Q control
+        action[2]: EV P control
+        action[3]: HP P control
+        action[4]: PV Q control
         """
         self._action_spaces = {agent: spaces.Box(low=-1, high=1, shape=(5,)) for agent in self.possible_agents}
 
@@ -152,10 +154,23 @@ class BaseElectricGym(MOAECEnv, EzPickle):
 
         base_observation_space["price"] = spaces.Box(low=0, high=1, shape=(forecast_horizon,))
         base_observation_space["voltages"] = spaces.Box(low=0, high=1, shape=(1,))
-        base_observation_space["line_loading"] = spaces.Box(low=0, high=1, shape=(2,))
+        base_observation_space["line_loading"] = spaces.Box(low=0, high=1, shape=(4,))
         base_observation_space["transformer_loading"] = spaces.Box(low=0, high=1, shape=(1,))
 
         self._observation_spaces = {agent: base_observation_space for agent in self.possible_agents}
+
+        """
+        Rewards are:
+        base_reward_space[0]: Economic reward
+        base_reward_space[1]: Flexibility reward
+        base_reward_space[2]: Voltage reward
+        base_reward_space[3]: PV curtailment cost
+        base_reward_space[4]: Loading cost
+        base_reward_space[5]: Soft constraint penalty
+        """
+        base_reward_space = Box(low=-1, high=1, shape=(6,))
+
+        self._reward_spaces = {agent: base_reward_space for agent in self.possible_agents}
 
         self.num_days = num_days
         self.power_scaling = power_scaling
@@ -182,8 +197,26 @@ class BaseElectricGym(MOAECEnv, EzPickle):
 
         self.ev_target = 0.5
 
+    @functools.lru_cache(maxsize=None)
+    @override
+    def observation_space(self, agent):
+        return self._observation_spaces[agent]
+
+    @functools.lru_cache(maxsize=None)
+    @override
+    def action_space(self, agent):
+        return self._action_spaces[agent]
+
+    @functools.lru_cache(maxsize=None)
+    @override
+    def reward_space(self, agent):
+        return self._reward_spaces[agent]
+
+    @override
     def reset(self, seed=None, options=None):
-        super().reset(seed=seed)
+        if seed is not None:
+            self.np_random = np.random.RandomState(seed)
+        self.agents = self.possible_agents[:]
         if self.test_split:
             self.start = self.test_split_days[self.test_counter] * 96
             self.test_counter += 1
@@ -194,26 +227,32 @@ class BaseElectricGym(MOAECEnv, EzPickle):
 
         self.gridMgr.reset(timestep=self.t, np_random=self.np_random)
 
-        observation = self._get_observation()
+        observation = {agent: self._get_observation(agent) for agent in self.agents}
+        self.terminations = {agent: False for agent in self.agents}
+        self.truncations = {agent: False for agent in self.agents}
+        self.infos = {agent: self.get_info(agent) for agent in self.agents}
+        self.rewards = {agent: np.zeros(6) for agent in self.agents}
 
-        rewards = self._get_rewards()
-        zero_penalties = {
-            "battery_penalty": 0,
-            "charger_penalty": 0,
-            "pv_penalty": 0,
-            "hp_penalty": 0,
-        }
+        return observation, self.infos
 
-        info = self._get_info(penalties=zero_penalties, rewards=rewards)
-        return observation, info
-
+    @override
     def step(self, action):
+        """Steps in the environment.
+
+        Args:
+            actions: a dict of actions, keyed by agent names
+
+        Returns: a tuple containing the following items in order:
+        - observations
+        - rewards
+        - terminations
+        - truncations
+        - infos
+        dicts where each dict looks like {agent_1: item_1, agent_2: item_2}
         """
-        Take a step in the environment.
-        Terminates only if the pandapower power flow calculation does not converge.
-        Truncated is True if the episode is done because of the max number of steps.
-        """
+
         terminated, penalties = self._take_action(action)
+
         if terminated:
             print("PP did not converge", self.t)
         rewards = self._get_rewards()
@@ -444,7 +483,7 @@ class BaseElectricGym(MOAECEnv, EzPickle):
         """
         random_numbers = self.np_random.random((self.gridMgr.get_controllers_count()[2], 3))
 
-        aborted, penalties = self.gridMgr.step(actions=action, timestep=self.t, random_numbers=random_numbers)
+        aborted, penalties = self.gridMgr.step_multiagent(actions=action, timestep=self.t, random_numbers=random_numbers)
         return aborted, penalties
 
     def _check_if_done(self):
