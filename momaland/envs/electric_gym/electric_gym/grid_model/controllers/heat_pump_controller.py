@@ -13,6 +13,7 @@ class HeatPumpController:
         super().__init__()
         self.load = load
         self.id = id
+        self.bus = load.bus
         self.error = np.zeros(window_size)
         self.max_p_mw = load.sn_mva * power_scaling
         self.prev_load = 0
@@ -55,9 +56,4 @@ class HeatPumpController:
         return np.sum(self.error)
 
     def scale_action(self, unscaled, to_min=0.5, to_max=1.5, from_min=-1, from_max=1):
-        return (to_max - to_min) * (unscaled - from_min) / (
-            from_max - from_min
-        ) + to_min
-
-    def get_prev_load(self):
-        return self.prev_load
+        return (to_max - to_min) * (unscaled - from_min) / (from_max - from_min) + to_min

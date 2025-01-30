@@ -113,6 +113,11 @@ class SingleFeederGridManager:
                     )
                 )
 
+        self.storage_controllers.sort(key=lambda controller: controller.bus)
+        self.pv_controllers.sort(key=lambda controller: controller.bus)
+        self.heat_pump_controllers.sort(key=lambda controller: controller.bus)
+        self.ev_controllers.sort(key=lambda controller: controller.bus)
+
         self.load_car_distributions()
         for i in range(2, 7):
             ev_id = pp.create_storage(
@@ -297,7 +302,11 @@ class SingleFeederGridManager:
         """
         Returns a tuple with the number of controllers for each component type.
         """
-        return self.storages_count, self.pv_count, self.ev_count, self.hp_count
+        assert self.storages_count == self.pv_count
+        assert self.storages_count == self.ev_count
+        assert self.storages_count == self.hp_count
+
+        return self.storages_count
 
     def get_control_space(self):
         """
@@ -371,6 +380,12 @@ class SingleFeederGridManager:
 
         """
         return self.max_sgen + self.max_storage_p + self.max_ev_p - self.min_load_p
+
+    def get_max_net_power_per_bus(self):
+
+        max_p = [sc.max_p_mw for sc in self.storage_controllers]
+        max_e = [sc.max_e_mwh for sc in self.storage_controllers]
+        return (max_p, max_e)
 
     def get_min_net_power(self):
         """

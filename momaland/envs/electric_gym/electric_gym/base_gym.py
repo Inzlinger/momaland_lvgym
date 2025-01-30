@@ -101,78 +101,61 @@ class BaseElectricGym(MOAECEnv, EzPickle):
 
         pv_obs_dim, load_obs_dim, storage_obs_dim, ev_obs_dim, hp_obs_dim = self.gridMgr.get_observation_space()
 
-        p_actors, q_actors = self.gridMgr.get_control_space()
-
-        control_dimensions = p_actors * self.control_p + q_actors * self.control_q
+        self.possible_agents = [i for i in range(self.gridMgr.get_controllers_count() + 1)]
 
         """
-        First n entries are P control (Storage, EV), next m entries are Q control (PV)
+        Actions are:
+
+        action[0]: BES P control
+        action[1]: EV P control
+        action[2]: HP P control
+        action[3]: PV Q control
+        action[4]: BES Q control
         """
-        self.action_space = spaces.Box(low=-1, high=1, shape=(control_dimensions,))
+        self._action_spaces = {agent: spaces.Box(low=-1, high=1, shape=(5,)) for agent in self.possible_agents}
+
         base_observation_space = {
             "pv_power": spaces.Box(
                 low=0,
                 high=1,
-                shape=(
-                    forecast_horizon,
-                    pv_obs_dim,
-                ),
+                shape=(forecast_horizon,),
             ),
             "load_power": spaces.Box(
                 low=0,
                 high=1,
-                shape=(
-                    forecast_horizon,
-                    load_obs_dim,
-                ),
+                shape=(forecast_horizon,),
             ),
             "heating_power": spaces.Box(
                 low=0,
                 high=1,
-                shape=(
-                    forecast_horizon,
-                    hp_obs_dim,
-                ),
+                shape=(forecast_horizon,),
             ),
             "heat_storage": spaces.Box(
                 low=-1,
                 high=1,
-                shape=(hp_obs_dim,),
+                shape=(1,),
             ),
             "soc_percent": spaces.Box(
                 low=0,
                 high=1,
-                shape=(storage_obs_dim,),
+                shape=(1,),
             ),
             "ev_soc_percent": spaces.Box(
                 low=0,
                 high=1,
-                shape=(ev_obs_dim,),
+                shape=(1,),
             ),
-            "ev_present": spaces.Box(low=0, high=1, shape=(ev_obs_dim,)),
+            "ev_present": spaces.Box(low=0, high=1, shape=(1,)),
             "time_of_day": spaces.Box(low=0, high=1, shape=(1,)),
             "date": spaces.Box(low=0, high=1, shape=(1,)),
         }
 
         base_observation_space["price"] = spaces.Box(low=0, high=1, shape=(forecast_horizon,))
-        base_observation_space["voltages"] = spaces.Box(low=0, high=1, shape=(6,))
-        base_observation_space["line_loading"] = spaces.Box(low=0, high=1, shape=(5,))
+        base_observation_space["voltages"] = spaces.Box(low=0, high=1, shape=(1,))
+        base_observation_space["line_loading"] = spaces.Box(low=0, high=1, shape=(2,))
         base_observation_space["transformer_loading"] = spaces.Box(low=0, high=1, shape=(1,))
 
-        """
-        Flatten the observation space if it is a Box space, else keep it as a Dict space.
-        """
-        if self.observation_space_type == "box":
-            self.observation_space = self.create_flattened_box_space(base_observation_space)
-        else:
-            self.observation_space = spaces.Dict(base_observation_space)
-
-        self.economic_scaling = economic_scaling
-        self.voltage_cost_scaling = voltage_scaling
-        self.load_cost_scaling = load_scaling
-        self.energy_loss_cost_scaling = energy_loss_scaling
-        self.ev_flexibility_scaling = ev_flexibility_scaling
-        self.curtailment_cost_scaling = curtailment_cost_scaling
+        self._observation_spaces = {agent: base_observation_space for agent in self.possible_agents}
 
         self.num_days = num_days
         self.power_scaling = power_scaling
@@ -181,7 +164,7 @@ class BaseElectricGym(MOAECEnv, EzPickle):
         days = [i for i in range(3, 356, 7)]
         eval_days = days[3::4]
         eval_days = eval_days[:-1]
-        self.test_split = eval_days
+        self.test_split_days = eval_days
         self.train_split = list(filter(lambda x: x not in eval_days, days))
 
         with open("./data/spotmarket_reduced_quarters_2023.csv", "r") as f:
