@@ -103,7 +103,7 @@ class BaseElectricGym(MOParallelEnv, EzPickle):
 
         self.gridMgr = self.create_grid()
 
-        self.possible_agents = [i for i in range(self.gridMgr.get_controllers_count() + 1)]
+        self.possible_agents = [i for i in range(2, 2 + self.gridMgr.get_controllers_count() + 1)]
 
         """
         Actions are:
@@ -255,11 +255,11 @@ class BaseElectricGym(MOParallelEnv, EzPickle):
 
         if terminated:
             print("PP did not converge", self.t)
-        rewards = self._get_rewards()
+        rewards = {agent: self._get_rewards(agent) for agent in self.agents}
         self.t += 1
         info = self._get_info(penalties=penalties, rewards=rewards)
         self.gridMgr.assign_profiles(timestep=self.t)
-        observation = self._get_observation()
+        observation = {agent: self._get_observation(agent) for agent in self.agents}
         truncated = self._check_if_done()
         if self.mo:
             penalty_sum = sum([val for key, val in penalties.items()])
@@ -287,19 +287,22 @@ class BaseElectricGym(MOParallelEnv, EzPickle):
 
         return gridMgr
 
-    def _get_observation(self):
+    def _get_observation(self, agent):
+
+        # account for the higher level grid connection busses (1 bus in front and 1 after the transformer)
         price = self._current_price_forecast(horizon=self.forecast_horizon, normalize=self.normalize)
 
-        load_power, pv_power, hp_power = self.gridMgr.get_uncontrolled_power(
+        load_power, pv_power, hp_power = self.gridMgr.get_bus_uncontrolled_power(
+            bus=agent,
             horizon=self.forecast_horizon,
             normalize=self.normalize,
             timestep=self.t,
         )
 
-        soc_percent = self.gridMgr.get_storage_soc()
-        ev_soc_percent = self.gridMgr.get_ev_soc()
-        ev_present = self.gridMgr.get_ev_present()
-        heat_storage = self.gridMgr.get_heat_storage()
+        soc_percent = self.gridMgr.get_bus_storage_soc(agent)
+        ev_soc_percent = self.gridMgr.get_bust_ev_soc(agent)
+        ev_present = self.gridMgr.get_bus_ev_present(agent)
+        heat_storage = self.gridMgr.get_bus_heat_storage(agent)
 
         time = self.t % 96
         time_normalized = time / 96
@@ -347,7 +350,7 @@ class BaseElectricGym(MOParallelEnv, EzPickle):
 
             base_observation["price"] = np.array(price, dtype=np.float32)
         if self.use_case == "voltage":
-            voltages = self.gridMgr.get_voltage_pu(normalize=self.normalize)
+            voltages = self.gridMgr.get_bus_voltage_pu(bus=agent, normalize=self.normalize)
 
             voltage_noise = self.np_random.normal(0, 0.01, voltages.shape)
             voltages += voltage_noise
@@ -359,8 +362,8 @@ class BaseElectricGym(MOParallelEnv, EzPickle):
             price += price_noise
             base_observation["price"] = np.array(price, dtype=np.float32)
 
-            voltages = self.gridMgr.get_voltage_pu(normalize=self.normalize)
-            line_loading = self.gridMgr.get_line_loading()
+            voltages = self.gridMgr.get_bus_voltage_pu(bus=agent, normalize=self.normalize)
+            line_loading = self.gridMgr.get_bus_line_loading()
             trafo_loading = self.gridMgr.get_transformer_loading()
 
             line_loading = self._normalize(line_loading, 0, 100)
@@ -380,26 +383,26 @@ class BaseElectricGym(MOParallelEnv, EzPickle):
         flattened_observation = np.concatenate([value.flatten() for value in base_observation.values()])
         return flattened_observation
 
-    def _get_rewards(self):
+    def _get_rewards(self, agent):
         rewards = {}
         if self.use_case == "economic":
-            rewards["price"] = self._get_price_reward()
-            rewards["ev_flexibility"] = self._get_ev_flexibility_reward()
+            rewards["price"] = self._get_price_reward(agent)
+            rewards["ev_flexibility"] = self._get_ev_flexibility_reward(agent)
 
         elif self.use_case == "voltage":
-            rewards["voltage"] = self._get_voltage_reward()
-            rewards["curtailment"] = self._get_pv_curtailment_cost()
+            rewards["voltage"] = self._get_voltage_reward(agent)
+            rewards["curtailment"] = self._get_pv_curtailment_cost(agent)
 
         if self.use_case == "combined":
-            rewards["price"] = self._get_price_reward()
-            rewards["ev_flexibility"] = self._get_ev_flexibility_reward()
-            rewards["loading"] = self._get_loading_reward()
-            rewards["voltage"] = self._get_voltage_reward()
-            rewards["curtailment"] = self._get_pv_curtailment_cost()
+            rewards["price"] = self._get_price_reward(agent)
+            rewards["ev_flexibility"] = self._get_ev_flexibility_reward(agent)
+            rewards["loading"] = self._get_loading_reward(agent)
+            rewards["voltage"] = self._get_voltage_reward(agent)
+            rewards["curtailment"] = self._get_pv_curtailment_cost(agent)
 
         return rewards
 
-    def _get_price_reward(self):
+    def _get_price_reward(self, agent):
         """
         Returns the economic reward based on the current price and power consumption.
         """
@@ -408,12 +411,12 @@ class BaseElectricGym(MOParallelEnv, EzPickle):
         cost = net_power * self._current_price() * 0.25
         return cost
 
-    def _get_loading_reward(self):
+    def _get_loading_reward(self, agent):
         """
         Returns a cost based on the transformer and line component loading.
         """
         transformer_load = self.gridMgr.get_transformer_loading()
-        line_load = self.gridMgr.get_line_loading()
+        line_load = self.gridMgr.get_bus_line_loading(agent)
 
         transformer_load = self._normalize(transformer_load, 0, 100)
         line_load = self._normalize(line_load, 0, 100)
@@ -428,12 +431,12 @@ class BaseElectricGym(MOParallelEnv, EzPickle):
 
         return -(total_loading_cost * self.load_cost_scaling)
 
-    def _get_ev_flexibility_reward(self):
+    def _get_ev_flexibility_reward(self, agent):
         """
         Returns a reward based on the charging state of the EVs, i.e. the flexibility margin.
         """
-        vehicles_present = self.gridMgr.get_ev_present()
-        ev_soc = self.gridMgr.get_ev_soc()
+        vehicles_present = self.gridMgr.get_bus_ev_present(agent)
+        ev_soc = self.gridMgr.get_bus_ev_soc(agent)
         total_flexibility_margin = 0
         for i, ev in enumerate(vehicles_present):
             if ev:
@@ -442,11 +445,11 @@ class BaseElectricGym(MOParallelEnv, EzPickle):
 
         return total_flexibility_margin * self.ev_flexibility_scaling
 
-    def _get_voltage_reward(self):
+    def _get_voltage_reward(self, bus):
         """
         Returns a cost based on the voltage deviation from the nominal value.
         """
-        voltage = self.gridMgr.get_voltage_pu()
+        voltage = self.gridMgr.get_bus_voltage_pu()
 
         voltage = 1 - voltage
 
@@ -465,7 +468,7 @@ class BaseElectricGym(MOParallelEnv, EzPickle):
         energy_loss = sum(line_losses) + sum(transformer_losses)
         return energy_loss * self.energy_loss_cost_scaling
 
-    def _get_pv_curtailment_cost(self):
+    def _get_pv_curtailment_cost(self, agent):
         """
         Returns a cost based on the curtailment of PV power.
         """

@@ -7,12 +7,12 @@ import numpy as np
 import pandas as pd
 
 
-from electric_gym.grid_model.controllers.storage_controller import StorageController
-from electric_gym.grid_model.controllers.ev_charger_controller import EVChargerController
-from electric_gym.grid_model.controllers.heat_pump_controller import HeatPumpController
-from electric_gym.grid_model.controllers.pv_controller import PVController
+from controllers.storage_controller import StorageController
+from controllers.ev_charger_controller import EVChargerController
+from controllers.heat_pump_controller import HeatPumpController
+from controllers.pv_controller import PVController
 
-from electric_gym.grid_model.grid_utils import (
+from grid_utils import (
     get_simbench_grid,
     min_max_normalize,
     extract_feeder,
@@ -357,6 +357,18 @@ class SingleFeederGridManager:
 
         return loads, sgen, storage, ev_p, hp_p
 
+    def get_bus_storge_soc(self, bus):
+        return np.array([sc.soc_percent for sc in self.storage_controllers if sc.bus == bus])
+
+    def get_bus_ev_soc(self, bus):
+        return np.array([ev.soc_percent for ev in self.ev_controllers if ev.bus == bus])
+
+    def get_bus_ev_present(self, bus):
+        return np.array([ev.at_home for ev in self.ev_controllers if ev.bus == bus])
+
+    def get_bus_heat_storage(self, bus):
+        return np.array([hpc.storage() for hpc in self.heat_pump_controllers if hpc.bus == bus])
+
     def get_storage_soc(self):
         return np.array([sc.soc_percent for sc in self.storage_controllers])
 
@@ -375,6 +387,10 @@ class SingleFeederGridManager:
             dtype=np.float64,
         )
 
+    def get_bus_line_loading(self, bus):
+        line_index = self.grid.line.loc[self.grid.line.from_bus == bus].index
+        return self.grid.res_line.loc[line_index].loading_percent.values
+
     def get_line_loading(self):
         return self.grid.res_line.loading_percent.values
 
@@ -389,6 +405,13 @@ class SingleFeederGridManager:
 
     def get_ext_power(self):
         return self.grid.res_ext_grid.p_mw.values
+
+    def get_bus_voltage_pu(self, bus, normalize=False):
+        voltages = self.grid.res_bus[bus].vm_pu.values
+        if normalize:
+            min_max_normalizer = np.vectorize(min_max_normalize)
+            voltages = min_max_normalizer(voltages, 0.75, 1.25)
+        return voltages
 
     def get_voltage_pu(self, normalize=False):
         voltages = self.grid.res_bus.vm_pu.values
@@ -489,6 +512,32 @@ class SingleFeederGridManager:
 
         return load, sgen, hp_p
 
+    def get_bus_uncontrolled_power(
+        self,
+        bus,
+        horizon,
+        timestep,
+        normalize=False,
+    ):
+        loads = self.grid.load[self.pure_loads]
+        loads_index = loads[loads.bus == bus].index
+        load = self.active_profiles[loads_index][timestep : timestep + horizon]
+
+        sgen_index = self.grid.sgen[self.grid.sgen.bus == bus].index
+        sgen = self.sgen_profiles[sgen_index][timestep : timestep + horizon]
+
+        hps = self.grid.load[self.hp_indices]
+        hp_index = hps[hps.bus == bus].index
+        hp_p = self.active_profiles[hp_index][timestep : timestep + horizon]
+
+        min_max_normalizer = np.vectorize(min_max_normalize)
+        if normalize:
+            load = min_max_normalizer(load, 0, self.max_load_p)
+            sgen = min_max_normalizer(sgen, 0, self.max_sgen)
+            hp_p = min_max_normalizer(hp_p, 0, self.max_hp_p)
+
+        return load, sgen, hp_p
+
     def get_controlled_power(
         self,
     ):
@@ -517,9 +566,13 @@ class SingleFeederGridManager:
         ts_load_p = time_series_profiles[("load", "p_mw")]
         ts_sgen_p = time_series_profiles[("sgen", "p_mw")]
 
+        print(ts_load_p.head())
+
         ts_load_q = create_ts_dataframe(self.grid, "load", ts_load_q)
         ts_load_p = create_ts_dataframe(self.grid, "load", ts_load_p)
         ts_sgen_p = create_ts_dataframe(self.grid, "sgen", ts_sgen_p)
+
+        print(ts_load_p.columns)
 
         self.active_profiles = ts_load_p
         self.reactive_profiles = ts_load_q
