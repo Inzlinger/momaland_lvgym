@@ -1,5 +1,6 @@
 import pickle
 import copy
+import os
 
 import simbench as sb
 import pandapower as pp
@@ -7,12 +8,12 @@ import numpy as np
 import pandas as pd
 
 
-from controllers.storage_controller import StorageController
-from controllers.ev_charger_controller import EVChargerController
-from controllers.heat_pump_controller import HeatPumpController
-from controllers.pv_controller import PVController
+from momaland.envs.electric_gym.electric_gym.grid_model.controllers.storage_controller import StorageController
+from momaland.envs.electric_gym.electric_gym.grid_model.controllers.ev_charger_controller import EVChargerController
+from momaland.envs.electric_gym.electric_gym.grid_model.controllers.heat_pump_controller import HeatPumpController
+from momaland.envs.electric_gym.electric_gym.grid_model.controllers.pv_controller import PVController
 
-from grid_utils import (
+from momaland.envs.electric_gym.electric_gym.grid_model.grid_utils import (
     get_simbench_grid,
     min_max_normalize,
     extract_feeder,
@@ -103,7 +104,7 @@ class SingleFeederGridManager:
 
         for load_id in self.grid.load.index:
             load = self.grid.load.loc[load_id]
-            if load.profile.startswith("Soil") or load.profile.startswith("Air"):
+            if load.profile.startswith("Soil") or load.profile.startswith("Air") or load.profile.startswith("HLS"):
                 self.heat_pump_controllers.append(
                     HeatPumpController(
                         id=load_id,
@@ -152,7 +153,7 @@ class SingleFeederGridManager:
         self.pure_loads = []
         for index in self.grid.load.index:
             load = self.grid.load.loc[index]
-            if load.profile.startswith("Soil") or load.profile.startswith("Air"):
+            if load.profile.startswith("Soil") or load.profile.startswith("Air") or load.profile.startswith("HLS"):
                 self.hp_indices.append(index)
             else:
                 self.pure_loads.append(index)
@@ -180,29 +181,29 @@ class SingleFeederGridManager:
         penalties = np.zeros(len(actions))
         for agent, action in actions.items():
             penalty = 0
-            penalty += self.storage_controllers[agent].run(
+            self.storage_controllers[agent - 2].run(
                 grid_state=self.grid,
                 p_action=action[0],
                 q_action=action[1],
                 timestep=timestep,
             )
-            penalty += self.ev_controllers[agent].run(
+            self.ev_controllers[agent - 2].run(
                 grid_state=self.grid,
                 p_action=action[2],
                 timestep=timestep,
-                random_numbers=random_numbers[agent],
+                random_numbers=random_numbers[agent - 2],
             )
-            penalty += self.heat_pump_controllers[agent].run(
+            penalty += self.heat_pump_controllers[agent - 2].run(
                 grid_state=self.grid,
                 p_action=action[3],
                 timestep=timestep,
             )
-            penalty += self.pv_controllers[agent].run(
+            self.pv_controllers[agent - 2].run(
                 grid_state=self.grid,
                 q_action=action[4],
                 timestep=timestep,
             )
-            penalties[agent] = penalty
+            penalties[agent - 2] = penalty
 
         aborted = self.run_powerflow(timestep)
         return aborted, penalties
@@ -357,7 +358,7 @@ class SingleFeederGridManager:
 
         return loads, sgen, storage, ev_p, hp_p
 
-    def get_bus_storge_soc(self, bus):
+    def get_bus_storage_soc(self, bus):
         return np.array([sc.soc_percent for sc in self.storage_controllers if sc.bus == bus])
 
     def get_bus_ev_soc(self, bus):
@@ -407,10 +408,10 @@ class SingleFeederGridManager:
         return self.grid.res_ext_grid.p_mw.values
 
     def get_bus_voltage_pu(self, bus, normalize=False):
-        voltages = self.grid.res_bus[bus].vm_pu.values
+        voltages = self.grid.res_bus.vm_pu.values[2]
         if normalize:
-            min_max_normalizer = np.vectorize(min_max_normalize)
-            voltages = min_max_normalizer(voltages, 0.75, 1.25)
+            # min_max_normalizer = np.vectorize(min_max_normalize)
+            voltages = min_max_normalize(voltages, 0.75, 1.25)
         return voltages
 
     def get_voltage_pu(self, normalize=False):
@@ -470,7 +471,8 @@ class SingleFeederGridManager:
         return [hp.max_p_mw for hp in self.heat_pump_controllers]
 
     def load_car_distributions(self):
-        with open("./data/car_distributions.csv", "r") as f:
+        cars_path = os.path.join(os.path.dirname(__file__), "./data/car_distributions.csv")
+        with open(cars_path, "r") as f:
             data = pd.read_csv(f)
         self.ev_arrival_probabilities = data["arrival"]
         self.ev_departure_probabilities = data["leave"]
@@ -519,22 +521,22 @@ class SingleFeederGridManager:
         timestep,
         normalize=False,
     ):
-        loads = self.grid.load[self.pure_loads]
-        loads_index = loads[loads.bus == bus].index
-        load = self.active_profiles[loads_index][timestep : timestep + horizon]
+        loads = self.grid.load.iloc[self.pure_loads]
+        bus_loads = loads[loads.bus == bus].index
+        load = self.active_profiles[bus_loads][timestep : timestep + horizon]
 
         sgen_index = self.grid.sgen[self.grid.sgen.bus == bus].index
         sgen = self.sgen_profiles[sgen_index][timestep : timestep + horizon]
 
-        hps = self.grid.load[self.hp_indices]
+        hps = self.grid.load.iloc[self.hp_indices]
         hp_index = hps[hps.bus == bus].index
         hp_p = self.active_profiles[hp_index][timestep : timestep + horizon]
 
-        min_max_normalizer = np.vectorize(min_max_normalize)
+        # min_max_normalizer = np.vectorize(min_max_normalize)
         if normalize:
-            load = min_max_normalizer(load, 0, self.max_load_p)
-            sgen = min_max_normalizer(sgen, 0, self.max_sgen)
-            hp_p = min_max_normalizer(hp_p, 0, self.max_hp_p)
+            load = min_max_normalize(load, 0, self.max_load_p)
+            sgen = min_max_normalize(sgen, 0, self.max_sgen)
+            hp_p = min_max_normalize(hp_p, 0, self.max_hp_p)
 
         return load, sgen, hp_p
 
@@ -566,13 +568,9 @@ class SingleFeederGridManager:
         ts_load_p = time_series_profiles[("load", "p_mw")]
         ts_sgen_p = time_series_profiles[("sgen", "p_mw")]
 
-        print(ts_load_p.head())
-
         ts_load_q = create_ts_dataframe(self.grid, "load", ts_load_q)
         ts_load_p = create_ts_dataframe(self.grid, "load", ts_load_p)
         ts_sgen_p = create_ts_dataframe(self.grid, "sgen", ts_sgen_p)
-
-        print(ts_load_p.columns)
 
         self.active_profiles = ts_load_p
         self.reactive_profiles = ts_load_q
@@ -618,18 +616,7 @@ class SingleFeederGridManager:
         )
 
     def add_hp(self):
-        hp_load = self.reference_grid.load.loc[25]
-        pp.create_load(
-            net=self.grid,
-            bus=4,
-            p_mw=0,
-            q_mvar=0,
-            sn_mva=hp_load["sn_mva"],
-            name=hp_load["name"],
-            min_p_mw=hp_load["min_p_mw"],
-            max_p_mw=hp_load["max_p_mw"],
-            profile=hp_load["profile"],
-        )
+        self.grid.load.at[6, "bus"] = 4
 
     def create_storages(self):
 

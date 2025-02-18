@@ -13,6 +13,8 @@ from momaland.utils.all_modules import all_environments
 @pytest.mark.parametrize(("name", "env_module"), list(all_environments.items()))
 def test_module(name, env_module):
     _env = env_module.env(render_mode=None)
+    print(str(_env))
+    print(os.path.basename(name))
     assert str(_env) == os.path.basename(name)
     api_test(_env)
     if _env.metadata["is_parallelizable"]:
