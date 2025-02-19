@@ -15,14 +15,14 @@ from momaland.utils.env import MOParallelEnv
 from momaland.envs.electric_gym.electric_gym.grid_model.single_feeder_grid_manager import SingleFeederGridManager
 
 
-def parallel_env(**kwargs):
-    return BaseElectricGym(**kwargs)
-
-
 def env(**kwargs):
     env = parallel_env(**kwargs)
     env = mo_parallel_to_aec(env)
     return env
+
+
+def parallel_env(**kwargs):
+    return BaseElectricGym(**kwargs)
 
 
 def raw_env(**kwargs):
@@ -31,7 +31,7 @@ def raw_env(**kwargs):
 
 class BaseElectricGym(MOParallelEnv, EzPickle):
 
-    metadata = {"render_modes": [""], "name": "moegridLVFeeder_v0"}
+    metadata = {"render_modes": [], "name": "moegridLVFeeder_v0"}
 
     def __init__(
         self,
@@ -114,6 +114,7 @@ class BaseElectricGym(MOParallelEnv, EzPickle):
 
         self.gridMgr = self.create_grid()
 
+        # Each agent is responsible for a bus in the grid
         self.possible_agents = [i for i in range(2, 7)]
 
         """
@@ -265,31 +266,28 @@ class BaseElectricGym(MOParallelEnv, EzPickle):
         dicts where each dict looks like {agent_1: item_1, agent_2: item_2}
         """
 
-        terminated, penalties = self._take_action(action)
+        environment_terminated, penalties = self._take_action(action)
 
-        if terminated:
-            print("PP did not converge", self.t)
         rewards = {agent: self._get_rewards(agent) for agent in self.agents}
         self.t += 1
         info = {agent: self.get_info(agent) for agent in self.agents}
         self.gridMgr.assign_profiles(timestep=self.t)
         observation = {agent: self._get_observation(agent) for agent in self.agents}
-        truncated = self._check_if_done()
+        environment_truncated = self._check_if_done()
 
         for agent, penalty in zip(self.agents, penalties):
             rewards[agent][5] = -penalty
 
-        print(rewards)
-
-        if terminated:
-            print("Terminated because PP did not converge")
+        if environment_terminated:
+            print("Terminated because PP did not converge", self.t)
             print("action", action)
-            print("reward", rewards)
-            print("penalties", penalties)
-            print("observation", observation)
 
-        terminated = {agent: terminated for agent in self.agents}
-        truncated = {agent: truncated for agent in self.agents}
+        terminated = {agent: environment_terminated for agent in self.agents}
+        truncated = {agent: environment_truncated for agent in self.agents}
+
+        if environment_terminated or environment_truncated:
+            self.agents = []
+
         return observation, rewards, terminated, truncated, info
 
     def get_info(self, agent):
@@ -369,8 +367,8 @@ class BaseElectricGym(MOParallelEnv, EzPickle):
         line_loading = self.gridMgr.get_bus_line_loading(bus=agent)
         trafo_loading = self.gridMgr.get_transformer_loading()
 
-        line_loading = self._normalize(line_loading, 0, 100)
-        trafo_loading = self._normalize(trafo_loading, 0, 100)
+        line_loading = self._normalize(line_loading, 0, 200)
+        trafo_loading = self._normalize(trafo_loading, 0, 200)
 
         voltage_noise = self.np_random.normal(0, 0.01, voltages.shape)
         voltages += voltage_noise
@@ -394,7 +392,7 @@ class BaseElectricGym(MOParallelEnv, EzPickle):
         rewards["curtailment"] = self._get_pv_curtailment_cost(agent)
         rewards["penalty_placerholder"] = 0
 
-        rewards = np.array([val for val in rewards.values()])
+        rewards = np.array([val for val in rewards.values()], dtype=np.float32)
 
         return rewards
 
@@ -402,7 +400,7 @@ class BaseElectricGym(MOParallelEnv, EzPickle):
         """
         Returns the economic reward based on the current price and power consumption.
         """
-        load_power, pv_power, storage_power, charging_point_power, hp_power = self.gridMgr.get_current_power()
+        load_power, pv_power, storage_power, charging_point_power, hp_power = self.gridMgr.get_bus_current_power(agent)
         net_power = pv_power.sum() - sum(storage_power) - load_power.sum() - sum(charging_point_power) - sum(hp_power)
         cost = net_power * self._current_price() * 0.25
         return cost
@@ -487,7 +485,7 @@ class BaseElectricGym(MOParallelEnv, EzPickle):
         """
         Returns True if the episode is done.
         """
-        done = self.t == (self.start + (self.num_days * 96))
+        done = bool(self.t == (self.start + (self.num_days * 96)))
         return done
 
     def _get_info(self, penalties, rewards):

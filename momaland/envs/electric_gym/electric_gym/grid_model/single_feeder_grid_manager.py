@@ -358,6 +358,16 @@ class SingleFeederGridManager:
 
         return loads, sgen, storage, ev_p, hp_p
 
+    def get_bus_current_power(self, bus):
+        pure_loads = self.grid.load.iloc[self.pure_loads]
+        loads = pure_loads[self.grid.load.bus == bus].loc[:, "p_mw"].values
+        sgen = self.grid.sgen[self.grid.sgen.bus == bus].loc[:, "p_mw"].values
+        storage = np.array([sc.p_mw for sc in self.storage_controllers if sc.bus == bus], dtype=np.float64)
+        ev_p = np.array([evc.p_mw for evc in self.ev_controllers if evc.bus == bus], dtype=np.float64)
+        hp_p = np.array([hpc.p_mw for hpc in self.heat_pump_controllers if hpc.bus == bus], dtype=np.float64)
+
+        return loads, sgen, storage, ev_p, hp_p
+
     def get_bus_storage_soc(self, bus):
         return np.array([sc.soc_percent for sc in self.storage_controllers if sc.bus == bus])
 
