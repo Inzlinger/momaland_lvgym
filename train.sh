@@ -2,8 +2,8 @@
 #SBATCH --nodes=1
 #SBATCH --partition=normal
 #SBATCH --time=72:00:00
-#SBATCH --output=slurm/slurm-exec_train-%j.out
-#SBATCH --error=slurm/slurm-exec_train-%j.err
+#SBATCH --output=slurm/momaland-train-%j.out
+#SBATCH --error=slurm/momaland-train-%j.err
 #SBATCH --job-name=rl-train-%j
 #SBATCH --gres=gpu:full:1
 
