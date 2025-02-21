@@ -18,7 +18,8 @@ from momaland.envs.multiwalker_stability import momultiwalker_stability_v0
 from momaland.envs.pistonball import mopistonball_v0
 from momaland.envs.route_choice import moroute_choice_v0
 from momaland.envs.samegame import mosame_game_v0
-from momaland.envs.electric_gym import moegridLVFeeder_v0
+
+# from momaland.envs.electric_gym import moegridLVFeeder_v0
 
 
 all_environments = {
@@ -35,5 +36,5 @@ all_environments = {
     "mobreakthrough_v0": mobreakthrough_v0,
     "mosame_game_v0": mosame_game_v0,
     "mogem_mining_v0": mogem_mining_v0,
-    "moegridLVFeeder_v0": moegridLVFeeder_v0,
+    # "moegridLVFeeder_v0": moegridLVFeeder_v0,
 }
